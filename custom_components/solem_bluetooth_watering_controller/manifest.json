@@ -1,0 +1,17 @@
+{
+  "domain": "solem_bluetooth_watering_controller",
+  "name": "Solem Bluetooth Watering Controller",
+  "codeowners": [
+    "@hcraveiro"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/msp1974/HAIntegrationExamples",
+  "homekit": {},
+  "iot_class": "local_polling",
+  "requirements": ["tenacity"],
+  "single_config_entry": false,
+  "ssdp": [],
+  "version": "1.0.0",
+  "zeroconf": []
+}
