@@ -6,7 +6,7 @@
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/msp1974/HAIntegrationExamples",
+  "documentation": "https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller",
   "homekit": {},
   "iot_class": "local_polling",
   "requirements": ["tenacity"],
