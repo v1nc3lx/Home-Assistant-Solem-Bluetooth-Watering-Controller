@@ -31,7 +31,17 @@
           "sensors": "Controller location",
           "sprinkle_with_rain": "Sprinkle even when raining"
         }
-      }
+      },
+      "station_areas": {
+          "title": "Lawn Area per Station",
+          "description": "Please provide the size in square meters (m²) for each station.",
+          "data": {
+              "station_1_area": "Station 1 Area (m²)",
+              "station_2_area": "Station 2 Area (m²)",
+              "station_3_area": "Station 3 Area (m²)",
+              "station_4_area": "Station 4 Area (m²)"
+            }
+       }
     }
   },
   "options": {

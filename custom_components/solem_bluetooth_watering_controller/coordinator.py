@@ -86,6 +86,11 @@ class SolemCoordinator(DataUpdateCoordinator):
         )
 
         self.num_stations = config_entry.data.get("num_stations", 2)
+        self.station_areas = config_entry.data.get("station_areas", [0] * self.num_stations)
+        if not isinstance(self.station_areas, list) or len(self.station_areas) != self.num_stations:
+            _LOGGER.warning(f"{self.controller_mac_address} - station_areas missing or invalid, setting defaults.")
+            self.station_areas = [0] * self.num_stations
+            
         self.config_entry = config_entry
 
         # Create instances of devices
@@ -151,6 +156,11 @@ class SolemCoordinator(DataUpdateCoordinator):
         self.weather_api = OpenWeatherMapAPI(self.openweathermap_api_key, self.latitude, self.longitude, self.openweathermap_api_timeout)
 
         self.num_stations = config_entry.data.get("num_stations", 2)
+        self.station_areas = config_entry.data.get("station_areas", [0] * self.num_stations)
+        if not isinstance(self.station_areas, list) or len(self.station_areas) != self.num_stations:
+            _LOGGER.warning(f"{self.controller_mac_address} - station_areas missing or invalid on update, setting defaults.")
+            self.station_areas = [0] * self.num_stations
+
         self.stations = [
             IrrigationStation(
                 device_id=f"{self.controller_mac_address}_irrigation_station_{station_id}_status",
@@ -185,8 +195,13 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.rain_total_amount_today = storage_data.get("rain_total_amount_today", 0)
             self.rain_total_amount_forecasted_today = storage_data.get("rain_total_amount_forecasted_today", 0)
             self.total_water_consumption = storage_data.get("total_water_consumption", 0)
-            self.water_flow_rate = storage_data.get("water_flow_rate")
             self.schedule = storage_data.get("schedule")
+            
+            self.water_flow_rate = storage_data.get("water_flow_rate")
+            if not isinstance(self.water_flow_rate, list) or len(self.water_flow_rate) != self.num_stations:
+                _LOGGER.debug(f"{self.controller_mac_address} - Initializing water_flow_rate with default values.")
+                self.water_flow_rate = [12] * self.num_stations  # Inicializa com 20 para cada estação
+
             
             last_reset = storage_data.get("last_reset")
             if isinstance(last_reset, str):
@@ -233,7 +248,7 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.rain_total_amount_forecasted_today = 0
             self.total_water_consumption = 0
             self.irrigation_manual_duration = 10
-            self.water_flow_rate = 20
+            self.water_flow_rate = [12] * self.num_stations
             self.schedule = None
 
         _LOGGER.info(f"{self.controller_mac_address} - Persistent data loaded.")
@@ -460,8 +475,10 @@ class SolemCoordinator(DataUpdateCoordinator):
         data = []
         
         counter = 1
+        water_flow_counter = 701
         stations_counter = 801
         buttons_counter = 901
+        
         will_it_rain_result = await self.weather_api.will_it_rain()
         self.will_it_rain_today = will_it_rain_result.get("will_rain", False)
         self.will_it_rain_today_forecast = will_it_rain_result.get("forecast", [])
@@ -523,17 +540,21 @@ class SolemCoordinator(DataUpdateCoordinator):
             "last_reboot": None,
         })
         counter += 1
-        data.append({
-            "device_id": f"{self.controller_mac_address}_water_flow_rate",
-            "device_type": "WATER_FLOW_NUMBER",
-            "device_name": "Water Flow Rate",
-            "device_uid": mac_to_uuid(self.controller_mac_address, counter),
-            "software_version": "1.0",
-            "value": self.water_flow_rate,
-            "icon": "mdi:water-pump",
-            "last_reboot": None,
-        })
-        counter += 1
+        
+        # Stations
+        for station_id in range(1, self.num_stations + 1):
+            data.append({
+                "device_id": f"{self.controller_mac_address}_water_flow_rate_{station_id}",
+                "device_type": "WATER_FLOW_NUMBER",
+                "device_name": f"Water Flow Rate {station_id}",
+                "device_uid": mac_to_uuid(self.controller_mac_address, water_flow_counter),
+                "software_version": "1.0",
+                "value": self.water_flow_rate[station_id - 1],
+                "icon": "mdi:water-pump",
+                "last_reboot": None,
+            })
+            water_flow_counter += 1
+        
 
         # Buttons
         for station_id in range(1, self.num_stations + 1):
@@ -745,7 +766,7 @@ class SolemCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(f"{self.controller_mac_address} - Irrigation cancelation triggered.")
                 break
             await sleep(1)  # Validate every second
-            self.total_water_consumption += (self.water_flow_rate / 60)
+            self.total_water_consumption += (self.water_flow_rate[station - 1] / 60)
 
         else:  # Só entra aqui se o loop terminar normalmente (sem interrupção)
             self.stations[station - 1].state = "Stopped"
@@ -811,10 +832,6 @@ class SolemCoordinator(DataUpdateCoordinator):
     async def async_set_schedule(self, new_schedule):
         """Replaces irrigation schedule from frontend card"""
         
-        _LOGGER.debug(f"new_schedule={new_schedule}")
-        # Cria um novo dicionário baseado no original, mas com "schedule" atualizado
-        new_data = {**self.config_entry.data, "schedule": new_schedule}
-    
         # Atualiza a variável interna para refletir a nova configuração
         self.schedule = new_schedule
         
@@ -824,9 +841,6 @@ class SolemCoordinator(DataUpdateCoordinator):
         data = await self.async_update_all_sensors()
         self.async_set_updated_data(data)
 
-        # Atualiza a config_entry com os novos dados
-        self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-
         _LOGGER.info(f"{self.controller_mac_address} - Updated schedule.")
 
     
@@ -834,23 +848,11 @@ class SolemCoordinator(DataUpdateCoordinator):
         """Initialize the schedule if not already set"""
         _LOGGER.info(f"{self.controller_mac_address} - Initializing schedule...")
     
-        # Primeiro, tenta carregar o schedule do armazenamento persistente
-        storage_data = await self.storage.async_load()
-        stored_schedule = storage_data.get("schedule") if storage_data else None
-    
-        # Verifica se existe um schedule válido no config_entry ou no storage
-        if (
-            "schedule" in self.config_entry.data and self.config_entry.data["schedule"]
-        ):
-            _LOGGER.debug(f"{self.controller_mac_address} - Found schedule in config_entry.")
-            self.schedule = self.config_entry.data["schedule"]
-        elif stored_schedule:
-            _LOGGER.debug(f"{self.controller_mac_address} - Found schedule in storage.")
-            self.schedule = stored_schedule
-        else:
+        # Is there a storaged schedule
+        if not self.schedule:
             _LOGGER.debug(f"{self.controller_mac_address} - No schedule found, creating a new one...")
     
-            # Cria um novo schedule baseado no número de estações
+            # Creates new schedule based on the number of stations
             new_schedule = [
                 {
                     "interval_days": 0,
@@ -865,37 +867,30 @@ class SolemCoordinator(DataUpdateCoordinator):
     
             self.schedule = new_schedule
     
-            # Salva o novo schedule no armazenamento persistente
+            # Saves new schedule on storage
             await self.save_persistent_data()
 
-            # Atualiza o config_entry com o novo schedule
-            new_data = {**self.config_entry.data, "schedule": new_schedule}
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
             return
     
-        # Verifica se o número de estações mudou e ajusta o schedule se necessário
+        # Verifies if the number of stations have changed and adapts schedule accordingly
         current_num_stations = len(next(iter(self.schedule))["stations"])
-        _LOGGER.debug(f"{self.controller_mac_address} - Previous num_station: {current_num_stations}")
-        _LOGGER.debug(f"{self.controller_mac_address} - New num_station: {self.num_stations}")
-        
+
         if current_num_stations != self.num_stations:
             _LOGGER.debug(f"{self.controller_mac_address} - Updating schedule due to station count change.")
             for month_config in self.schedule:
                 current_stations = month_config.get("stations", {})
                 new_station_keys = {f"station_{i+1}_minutes" for i in range(self.num_stations)}
     
-                # Adicionar novas estações
+                # Adds new stations
                 for new_station in new_station_keys - set(current_stations.keys()):
                     month_config["stations"][new_station] = 0
     
-                # Remover estações obsoletas
+                # Remove obsolet stations
                 for old_station in set(current_stations.keys()) - new_station_keys:
                     del month_config["stations"][old_station]
     
-            # Atualiza o config_entry e persiste a alteração
-            new_data = {**self.config_entry.data, "schedule": self.schedule}
+            # Saves the schedule on storage
             await self.save_persistent_data()
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
 
         _LOGGER.info(f"{self.controller_mac_address} - Schedule initialized.")
 

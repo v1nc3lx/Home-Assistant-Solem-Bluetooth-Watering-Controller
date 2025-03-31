@@ -85,7 +85,7 @@ class SolemNumberEntity(SolemBaseEntity, NumberEntity):
     def entity_category(self):
         return EntityCategory.CONFIG
 
-class IrrigationManualDuration(SolemNumberEntity, RestoreEntity):
+class IrrigationManualDuration(SolemNumberEntity):
     def __init__(self, coordinator: SolemCoordinator, device: dict[str, Any], parameter: str):
         super().__init__(coordinator, device, parameter)
         self._attr_min_value = 1
@@ -104,43 +104,23 @@ class IrrigationManualDuration(SolemNumberEntity, RestoreEntity):
         self.coordinator.irrigation_manual_duration = value
         self.async_write_ha_state()
 
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
 
-        if last_state and last_state.state not in (None, "unknown", "unavailable"):
-            try:
-                self._attr_native_value = float(last_state.state)
-                self.coordinator.irrigation_manual_duration = float(last_state.state)
-            except ValueError:
-                _LOGGER.warning(f"Estado inválido restaurado: {last_state.state}")
-
-class IrrigationFlowRate(SolemNumberEntity, RestoreEntity):
+class IrrigationFlowRate(SolemNumberEntity):
     def __init__(self, coordinator: SolemCoordinator, device: dict[str, Any], parameter: str):
         super().__init__(coordinator, device, parameter)
-        self._attr_min_value = 0.5
+        self._attr_min_value = 1
         self._attr_max_value = 30
-        self._attr_native_min_value = 0.5
+        self._attr_native_min_value = 1
         self._attr_native_max_value = 30
-        self._attr_step = 0.5
-        self._attr_native_value = self.coordinator.water_flow_rate
+        self._attr_step = 1
 
     @property
     def native_value(self) -> float | None:
-        return self.coordinator.water_flow_rate
+        station_id = int(self.device_id.rsplit('_', 1)[-1])
+        return self.coordinator.water_flow_rate[station_id - 1]
         
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = value
-        self.coordinator.water_flow_rate = value
+        station_id = int(self.device_id.rsplit('_', 1)[-1])
+        self.coordinator.water_flow_rate[station_id - 1] = value
         self.async_write_ha_state()
-    
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-
-        if last_state and last_state.state not in (None, "unknown", "unavailable"):
-            try:
-                self._attr_native_value = float(last_state.state)
-                self.coordinator.water_flow_rate = float(last_state.state)
-            except ValueError:
-                _LOGGER.warning(f"Estado inválido restaurado: {last_state.state}")

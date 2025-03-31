@@ -87,6 +87,7 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self.current_month_index = 0
+        self._num_stations: int = 0
 
     @staticmethod
     @callback
@@ -145,7 +146,10 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._input_data = user_input
 
                 # Finish the configuration
-                return self.async_create_entry(title=self._input_data[CONTROLLER_MAC_ADDRESS], data=self._input_data)
+                #return self.async_create_entry(title=self._input_data[CONTROLLER_MAC_ADDRESS], data=self._input_data)
+                
+                self.num_stations = self._input_data[NUM_STATIONS]
+                return await self.async_step_station_areas()
 
         existing_entries = {entry.data.get(CONTROLLER_MAC_ADDRESS) for entry in self.hass.config_entries.async_entries(DOMAIN)}
 
@@ -188,7 +192,39 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=schema,
             errors=errors,
-            last_step=True,  # Adding last_step True/False decides whether form shows Next or Submit buttons
+            last_step=False,  # Adding last_step True/False decides whether form shows Next or Submit buttons
+        )
+
+    async def async_step_station_areas(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step to collect lawn area per station."""
+        
+        errors: dict[str, str] = {}
+    
+        if user_input is not None:
+            try:
+                station_areas = [
+                    user_input[f"station_{i}_area"]
+                    for i in range(1, self.num_stations + 1)
+                ]
+                self._input_data["station_areas"] = station_areas
+    
+                return self.async_create_entry(
+                    title=self._input_data[CONTROLLER_MAC_ADDRESS],
+                    data=self._input_data,
+                )
+            except Exception as e:
+                _LOGGER.exception("Failed to process station areas")
+                errors["base"] = "unknown"
+    
+        area_schema = self._build_station_area_schema()
+    
+        return self.async_show_form(
+            step_id="station_areas",
+            data_schema=area_schema,
+            errors=errors,
+            last_step=True,
         )
 
     async def async_step_reconfigure(
@@ -206,6 +242,8 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
         config_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
+        
+        self.num_stations = config_entry.data.get(NUM_STATIONS, 1)
 
         if user_input is not None:
             try:
@@ -238,12 +276,9 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._input_data = user_input
 
                 # Finish configuration
-                return self.async_update_reload_and_abort(
-                    config_entry,
-                    unique_id=config_entry.unique_id,
-                    data=self._input_data,
-                    reason="reconfigure_successful",
-                )
+                #return self.async_update_reload_and_abort(config_entry, unique_id=config_entry.unique_id, data=self._input_data, reason="reconfigure_successful")
+                
+                return await self.async_step_station_areas_reconfigure()
 
         api = SolemAPI(None, BLUETOOTH_DEFAULT_TIMEOUT)
         bt_devices = await api.scan_bluetooth()
@@ -283,7 +318,53 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             last_step=True,  # Adding last_step True/False decides whether form shows Next or Submit buttons
         )
-
+    
+    
+    async def async_step_station_areas_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reconfigure lawn area per station."""
+        errors: dict[str, str] = {}
+        config_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        previous_areas = config_entry.data.get("station_areas", [])
+    
+        if user_input is not None:
+            try:
+                station_areas = [
+                    user_input[f"station_{i}_area"]
+                    for i in range(1, self.num_stations + 1)
+                ]
+                self._input_data["station_areas"] = station_areas
+    
+                return self.async_update_reload_and_abort(
+                    config_entry,
+                    unique_id=config_entry.unique_id,
+                    data=self._input_data,
+                    reason="reconfigure_successful",
+                )
+            except Exception as e:
+                _LOGGER.exception("Failed to process reconfigured station areas")
+                errors["base"] = "unknown"
+    
+        area_schema = self._build_station_area_schema(previous_areas)
+    
+        return self.async_show_form(
+            step_id="station_areas_reconfigure",
+            data_schema=area_schema,
+            errors=errors,
+            last_step=True,
+        )
+        
+    def _build_station_area_schema(self, defaults: list[float] | None = None) -> vol.Schema:
+        """Generate schema for station areas with optional defaults."""
+        return vol.Schema({
+            vol.Required(
+                f"station_{i}_area",
+                default=defaults[i - 1] if defaults and i - 1 < len(defaults) else 0,
+                description={"translation_key": f"station_{i}_area"},
+            ): vol.All(vol.Coerce(float), vol.Range(min=0))
+            for i in range(1, self.num_stations + 1)
+        })
 
 class SolemOptionsFlowHandler(OptionsFlow):
     """Handles the options flow."""
