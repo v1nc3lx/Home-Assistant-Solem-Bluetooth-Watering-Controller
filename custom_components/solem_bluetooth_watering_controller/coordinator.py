@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for our integration."""
 
 from datetime import datetime, timedelta
+from homeassistant.util import dt as dt_util
 import logging
 import asyncio
 from asyncio import sleep
@@ -18,7 +19,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.event import async_call_later
 
-from .util import mac_to_uuid, ensure_datetime
+from .util import mac_to_uuid, ensure_datetime, ensure_aware
 from .models import IrrigationController, IrrigationStation
 from .api import SolemAPI, OpenWeatherMapAPI, APIConnectionError
 from .const import (
@@ -182,7 +183,6 @@ class SolemCoordinator(DataUpdateCoordinator):
         storage_data = await self.storage.async_load()
 
         if storage_data:
-            # If data is available fill the variables.
             self.will_it_rain_today = storage_data.get("will_it_rain_today")
             self.will_it_rain_today_forecast = storage_data.get("will_it_rain_today_forecast")
             self.weather_api._cache_forecast = self.will_it_rain_today_forecast
@@ -195,23 +195,33 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.rain_total_amount_today = storage_data.get("rain_total_amount_today", 0)
             self.rain_total_amount_forecasted_today = storage_data.get("rain_total_amount_forecasted_today", 0)
             self.total_water_consumption = storage_data.get("total_water_consumption", 0)
+
+            self.sprinkle_total_amount_today = storage_data.get("sprinkle_total_amount_today")
+            if not isinstance(self.sprinkle_total_amount_today, list) or len(self.sprinkle_total_amount_today) != self.num_stations:
+                _LOGGER.debug(f"{self.controller_mac_address} - Initializing sprinkle_total_amount_today with default values.")
+                self.sprinkle_total_amount_today = [0.0] * self.num_stations
+
+            self.sprinkle_target_amount_today = storage_data.get("sprinkle_target_amount_today")
+            if not isinstance(self.sprinkle_target_amount_today, list) or len(self.sprinkle_target_amount_today) != self.num_stations:
+                _LOGGER.debug(f"{self.controller_mac_address} - Initializing sprinkle_target_amount_today with default values.")
+                self.sprinkle_target_amount_today = [0.0] * self.num_stations
+
             self.schedule = storage_data.get("schedule")
-            
+
             self.water_flow_rate = storage_data.get("water_flow_rate")
             if not isinstance(self.water_flow_rate, list) or len(self.water_flow_rate) != self.num_stations:
                 _LOGGER.debug(f"{self.controller_mac_address} - Initializing water_flow_rate with default values.")
-                self.water_flow_rate = [12] * self.num_stations  # Inicializa com 20 para cada estação
+                self.water_flow_rate = [12] * self.num_stations
 
-            
             last_reset = storage_data.get("last_reset")
             if isinstance(last_reset, str):
                 try:
                     self.last_reset = datetime.strptime(last_reset, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     _LOGGER.error(f"{self.controller_mac_address} - Invalid date format for last_reset: {last_reset}")
-                    self.last_reset = datetime.now()  # Fallback para a data e hora atuais
+                    self.last_reset = dt_util.now()
             else:
-                self.last_reset = last_reset or datetime.now()
+                self.last_reset = last_reset or dt_util.now()
 
             last_rain = storage_data.get("last_rain")
             if isinstance(last_rain, str):
@@ -219,60 +229,79 @@ class SolemCoordinator(DataUpdateCoordinator):
                     self.last_rain = datetime.strptime(last_rain, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     _LOGGER.error(f"{self.controller_mac_address} - Invalid date format for last_rain: {last_rain}")
-                    self.last_rain = datetime.now()  # Fallback para a data e hora atuais
+                    self.last_rain = dt_util.now()
             else:
-                self.last_rain = last_rain or datetime.now()
-            
+                self.last_rain = last_rain or dt_util.now()
+
             last_sprinkle = storage_data.get("last_sprinkle")
             if isinstance(last_sprinkle, str):
                 try:
                     self.last_sprinkle = datetime.strptime(last_sprinkle, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     _LOGGER.error(f"{self.controller_mac_address} - Invalid date format for last_sprinkle: {last_sprinkle}")
-                    self.last_sprinkle = datetime.now()  # Fallback para a data e hora atuais
+                    self.last_sprinkle = dt_util.now()
             else:
-                self.last_sprinkle = last_sprinkle or datetime.now()
+                self.last_sprinkle = last_sprinkle or dt_util.now()
+
+            # Normalize all datetimes to be aware
+            from homeassistant.util import dt as dt_util
+            from .util import ensure_aware
+            self.last_reset = ensure_aware(self.last_reset)
+            self.last_rain = ensure_aware(self.last_rain)
+            self.last_sprinkle = ensure_aware(self.last_sprinkle)
 
         else:
-            # If data is not present, initialize with default data
             self.will_it_rain_today = False
             self.will_it_rain_today_forecast = []
             self.has_rained_today = False
             self.is_raining_now = False
             self.is_raining_now_json = []
-            self.last_reset = None
-            self.last_sprinkle = datetime.now()
-            self.last_rain = datetime.now()
+            self.last_reset = dt_util.now()
+            self.last_sprinkle = dt_util.now()
+            self.last_rain = dt_util.now()
             self.rain_time_today = 0
             self.rain_total_amount_today = 0
             self.rain_total_amount_forecasted_today = 0
             self.total_water_consumption = 0
             self.irrigation_manual_duration = 10
             self.water_flow_rate = [12] * self.num_stations
+            self.sprinkle_total_amount_today = [0.0] * self.num_stations
+            self.sprinkle_target_amount_today = [0.0] * self.num_stations
             self.schedule = None
 
         _LOGGER.info(f"{self.controller_mac_address} - Persistent data loaded.")
 
     async def save_persistent_data(self):
         """Save persistent data on storage."""
+        from .util import ensure_aware
+        
+        if isinstance(self.last_reset, str):
+            self.last_reset = datetime.fromisoformat(self.last_reset)
+        if isinstance(self.last_rain, str):
+            self.last_rain = datetime.fromisoformat(self.last_rain)
+        if isinstance(self.last_sprinkle, str):
+            self.last_sprinkle = datetime.fromisoformat(self.last_sprinkle)
+        
         storage_data = {
             "will_it_rain_today": self.will_it_rain_today,
             "will_it_rain_today_forecast": self.will_it_rain_today_forecast,
             "has_rained_today": self.has_rained_today,
             "is_raining_now": self.is_raining_now,
             "is_raining_now_json": self.is_raining_now_json,
-            "last_reset": ensure_datetime(self.last_reset).strftime("%Y-%m-%d %H:%M:%S"),
-            "last_sprinkle": (self.last_sprinkle or datetime.min).strftime("%Y-%m-%d %H:%M:%S"),
-            "last_rain": (self.last_rain or datetime.min).strftime("%Y-%m-%d %H:%M:%S"),
+            "last_reset": ensure_aware(self.last_reset).strftime("%Y-%m-%d %H:%M:%S"),
+            "last_sprinkle": ensure_aware(self.last_sprinkle or datetime.min).strftime("%Y-%m-%d %H:%M:%S"),
+            "last_rain": ensure_aware(self.last_rain or datetime.min).strftime("%Y-%m-%d %H:%M:%S"),
             "irrigation_manual_duration": self.irrigation_manual_duration,
             "water_flow_rate": self.water_flow_rate,
             "rain_time_today": self.rain_time_today,
             "rain_total_amount_today": self.rain_total_amount_today,
             "rain_total_amount_forecasted_today": self.rain_total_amount_forecasted_today,
             "total_water_consumption": self.total_water_consumption,
+            "sprinkle_total_amount_today": self.sprinkle_total_amount_today,
+            "sprinkle_target_amount_today": self.sprinkle_target_amount_today,
             "schedule": self.schedule,
         }
-
+    
         await self.storage.async_save(storage_data)
         _LOGGER.debug(f"{self.controller_mac_address} - Persistent data saved.")
 
@@ -282,7 +311,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"{self.controller_mac_address} - Scheduling tasks for midnight...")
         async_track_time_change(
             self.hass,
-            lambda *_: self.hass.create_task(self.reset_rain_flag()),
+            lambda *_: self.hass.create_task(self.reset_rain_sprinkle_indicators()),
             hour=0, minute=0, second=0
         )
         async_track_time_change(
@@ -312,64 +341,126 @@ class SolemCoordinator(DataUpdateCoordinator):
         await self.setup_scheduled_tasks()
         self.data = await self.async_update_all_sensors()
 
-    async def reset_rain_flag(self, *_):
+    async def calculate_sprinkle_target_amounts(self) -> list[float]:
+        """Calcula os mm que devem ser aplicados hoje por estação, com base na programação."""
+        target = [0.0] * self.num_stations
+        today = dt_util.now().date()
+        current_month_index = today.month - 1
+    
+        month_config = self.schedule[current_month_index]
+        if not month_config:
+            _LOGGER.debug(f"{self.controller_mac_address} - Sprinkle target amounts: {target}")
+            return target
+    
+        watering_hours = [h for h in month_config.get("hours", []) if h]
+        interval_days = month_config.get("interval_days", 2)
+        stations = month_config.get("stations", {})
+    
+        # Verifica se é um dia de rega
+        if self.last_rain or self.last_sprinkle:
+            last_event_date = max(filter(None, [self.last_rain, self.last_sprinkle]))
+            days_since_last_event = (today - last_event_date.date()).days
+            if days_since_last_event < interval_days:
+                _LOGGER.debug(f"{self.controller_mac_address} - Sprinkle target amounts: {target}")
+                return target  # Não é dia de rega
+    
+        if not watering_hours:
+            _LOGGER.debug(f"{self.controller_mac_address} - Sprinkle target amounts: {target}")
+            return target  # Sem horários = não rega
+    
+        occurrences = len(watering_hours)
+    
+        for station_id in range(1, self.num_stations + 1):
+            key = f"station_{station_id}_minutes"
+            minutes = stations.get(key, 0)
+            total_minutes = minutes * occurrences
+            if total_minutes > 0:
+                flow = self.water_flow_rate[station_id - 1]  # L/min
+                area = self.station_areas[station_id - 1] or 1  # m²
+                mm = (flow / area) * total_minutes
+                target[station_id - 1] = round(mm, 2)
+    
+        _LOGGER.debug(f"{self.controller_mac_address} - Sprinkle target amounts: {target}")
+        return target
+
+
+    async def reset_rain_sprinkle_indicators(self, *_):
         """Reset raind indicators."""
         self.has_rained_today = False
         self.will_it_rain_today = False
         self.rain_time_today = 0
         self.rain_total_amount_today = 0
+        self.sprinkle_total_amount_today = [0.0] * self.num_stations
         self.rain_total_amount_forecasted_today = await self.weather_api.get_total_rain_forecast_for_today()
-        self.last_reset = datetime.now().isoformat()
+        self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
+        self.last_reset = dt_util.now()
         
-        _LOGGER.info(f"{self.controller_mac_address} - Resetted rain indicators.")
+        _LOGGER.info(f"{self.controller_mac_address} - Resetted rain and sprinkle indicators.")
 
+    def needs_watering_today(self) -> bool:
+        """Check if any station still needs watering today."""
+        for station_id in range(1, self.num_stations + 1):
+            target_mm = self.sprinkle_target_amount_today[station_id - 1]
+            applied_mm = self.sprinkle_total_amount_today[station_id - 1]
+            rain_mm = self.rain_total_amount_forecasted_today
+    
+            remaining = target_mm - (applied_mm + rain_mm)
+            if remaining > 0:
+                _LOGGER.debug(
+                    f"{self.controller_mac_address} - Station {station_id} needs more water: "
+                    f"Target={target_mm}mm, Applied={applied_mm}mm, Rain={rain_mm}mm → Remaining={remaining}mm"
+                )
+                return True  # Pelo menos uma estação ainda precisa de rega
+    
+        _LOGGER.debug(f"{self.controller_mac_address} - All stations have enough water today.")
+        return False
 
     async def check_and_schedule_watering(self, *_):
         """Check if there should be watering today and schedule the tasks."""
         _LOGGER.info(f"{self.controller_mac_address} - Checking and scheduling watering times...")
-    
-        today = datetime.now().date()
+
+        today = dt_util.now().date()
         current_month_index = today.month - 1
-    
-        # Procurar um mês com configuração válida
+
         for i in range(12):
             month_config = self.schedule[(current_month_index + i) % 12]
             watering_hours = month_config.get("hours", [])
-    
-            if month_config and watering_hours:  # Apenas meses com horários definidos
+            if month_config and watering_hours:
                 break
         else:
             _LOGGER.info(f"{self.controller_mac_address} - No valid configuration found for any month.")
             return
-    
+
         interval_days = month_config.get("interval_days", 2)
-        stations = month_config.get("stations", {})
-    
-        # Se não for para regar com chuva e choveu ou vai chover, cancelar
-        if not self.sprinkle_with_rain and (self.has_rained_today or self.will_it_rain_today or self.is_raining_now):
-            _LOGGER.info(f"{self.controller_mac_address} - Canceling watering: rain detected.")
-            return
-    
-        # Se houve rega ou chuva recente, respeitar o intervalo
-        if self.last_rain or self.last_sprinkle:
-            last_event_date = max(filter(None, [self.last_rain, self.last_sprinkle]))
+
+        last_rain = ensure_aware(self.last_rain)
+        last_sprinkle = ensure_aware(self.last_sprinkle)
+
+        if last_rain or last_sprinkle:
+            last_event_date = max(filter(None, [last_rain, last_sprinkle]))
             days_since_last_event = (today - last_event_date.date()).days
             if days_since_last_event < interval_days:
-                _LOGGER.info(f"{self.controller_mac_address} - Last event was {days_since_last_event} days ago. Interval of {interval_days} days not yet passed.")
+                _LOGGER.info(
+                    f"{self.controller_mac_address} - Last event was {days_since_last_event} days ago. "
+                    f"Interval of {interval_days} days not yet passed."
+                )
                 return
-    
-        # Agendar rega para os horários configurados
+
+        if not self.needs_watering_today():
+            _LOGGER.info(f"{self.controller_mac_address} - No station needs watering today.")
+            return
+
         for hour in watering_hours:
             if hour:
                 try:
-                    watering_time = datetime.combine(today, datetime.strptime(hour, "%H:%M:%S").time())
-                    delay = (watering_time - datetime.now()).total_seconds()
+                    watering_time = dt_util.as_local(datetime.combine(today, datetime.strptime(hour, "%H:%M:%S").time()))
+                    delay = (watering_time - dt_util.now()).total_seconds()
                     if delay > 0:
                         async_call_later(self.hass, delay, self.run_watering_cycle)
                         _LOGGER.info(f"{self.controller_mac_address} - Watering scheduled for {watering_time}")
                 except ValueError:
                     _LOGGER.error(f"{self.controller_mac_address} - Invalid hour format: {hour}")
-                    
+
         _LOGGER.debug(f"{self.controller_mac_address} - Scheduled watering.")
 
 
@@ -378,7 +469,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         Get next watering time considering configurations.
         """
         _LOGGER.debug(f"{self.controller_mac_address} - Determining next watering schedule...")
-        today = datetime.now().date()
+        today = dt_util.now().date()
         current_month_index = today.month - 1
     
         # Procurar um mês com configuração e horários definidos
@@ -417,7 +508,9 @@ class SolemCoordinator(DataUpdateCoordinator):
             try:
                 next_watering_time = datetime.strptime(hour, "%H:%M:%S").time()
                 next_watering_datetime = datetime.combine(next_watering_day, next_watering_time)
-                if next_watering_datetime > datetime.now():
+                next_watering_datetime = dt_util.as_local(next_watering_datetime)
+    
+                if next_watering_datetime > dt_util.now():
                     return next_watering_datetime
             except ValueError:
                 _LOGGER.error(f"{self.controller_mac_address} - Invalid hour format: {hour}")
@@ -428,29 +521,58 @@ class SolemCoordinator(DataUpdateCoordinator):
         if not watering_hours:
             return None
     
-        return datetime.combine(next_watering_day + timedelta(days=1), datetime.strptime(watering_hours[0], "%H:%M:%S").time())
+        fallback_time = datetime.combine(
+            next_watering_day + timedelta(days=1),
+            datetime.strptime(watering_hours[0], "%H:%M:%S").time()
+        )
+        return dt_util.as_local(fallback_time)
 
-
-    
     async def run_watering_cycle(self, *_):
         """Sprinkle if all conditions are valid."""
-        if not self.sprinkle_with_rain and (self.has_rained_today or self.will_it_rain_today or self.is_raining_now):
-            _LOGGER.info(f"{self.controller_mac_address} - Canceling watering as the weather forecast changed and it is now supposed to rain.")
-            return
-
-        current_month_index = datetime.now().month - 1
+        _LOGGER.info(f"{self.controller_mac_address} - Running scheduled watering cycle...")
+    
+        current_month_index = dt_util.now().month - 1
         month_config = self.schedule[current_month_index]
-
+    
         if not month_config:
             _LOGGER.info(f"{self.controller_mac_address} - No configuration active for this month.")
             return
-
+    
         stations = month_config.get("stations", {})
-
-        for station_key, minutes in stations.items():
-            if isinstance(minutes, int) and minutes > 0:
-                station_name = station_key.replace("_minutes", "").replace("station_", "")
-                await self.start_irrigation(station_name, minutes)
+    
+        for station_key, scheduled_minutes in stations.items():
+            if not isinstance(scheduled_minutes, int) or scheduled_minutes <= 0:
+                continue
+    
+            station_id = int(station_key.replace("station_", "").replace("_minutes", ""))
+            target_mm = self.sprinkle_target_amount_today[station_id - 1]
+            already_applied_mm = self.sprinkle_total_amount_today[station_id - 1]
+            rain_mm = self.rain_total_amount_forecasted_today
+            remaining_mm = max(0.0, target_mm - (already_applied_mm + rain_mm))
+    
+            _LOGGER.debug(
+                f"{self.controller_mac_address} - Station {station_id}: Target={target_mm}mm, "
+                f"Applied={already_applied_mm}mm, Rain={rain_mm}mm → Remaining={remaining_mm}mm"
+            )
+    
+            if remaining_mm <= 0:
+                _LOGGER.info(f"{self.controller_mac_address} - Station {station_id} already received enough water.")
+                continue
+    
+            # Calcula o mm/min com base na área e caudal
+            flow_rate = self.water_flow_rate[station_id - 1]  # L/min
+            area = self.station_areas[station_id - 1] or 1     # m², evita divisão por zero
+            mm_per_minute = flow_rate / area
+    
+            # Calcula os minutos necessários para atingir os mm restantes
+            minutes_needed = int((remaining_mm / mm_per_minute) + 0.999)  # arredonda para cima
+    
+            if minutes_needed > 0:
+                _LOGGER.info(
+                    f"{self.controller_mac_address} - Station {station_id} will irrigate for {minutes_needed} min "
+                    f"to apply {remaining_mm:.2f}mm (mm/min={mm_per_minute:.2f})"
+                )
+                await self.start_irrigation(station_id, minutes_needed)
 
     
     async def async_update_all_sensors(self):
@@ -466,15 +588,17 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.last_reset = None
         
         # Verifies if it's after 00:05:00
-        now = datetime.now()
+        now = dt_util.now()
         if now.time() > datetime.strptime("00:05:00", "%H:%M:%S").time():
             # If last_reset was not today
-            if self.last_reset is None or datetime.fromisoformat(self.last_reset).date() != now.date():
-                await self.reset_rain_flag()
+            self.last_reset = ensure_datetime(self.last_reset)
+            if self.last_reset is None or self.last_reset.date() != now.date():
+                await self.reset_rain_sprinkle_indicators()
                 
         data = []
         
         counter = 1
+        sprinkle_counter = 601
         water_flow_counter = 701
         stations_counter = 801
         buttons_counter = 901
@@ -487,7 +611,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         self.is_raining_now_json = is_raining_result["current"]
         if self.is_raining_now:
             self.has_rained_today = True
-            self.last_rain = datetime.now()
+            self.last_rain = dt_util.now()
             self.rain_time_today += self.poll_interval / 60
             self.rain_total_amount_today += await self.calculate_rain_amount()
 
@@ -568,6 +692,21 @@ class SolemCoordinator(DataUpdateCoordinator):
                 "last_reboot": None,
             })
             buttons_counter += 1
+        
+        # Sprinkle total amount (mm) per station
+        for station_id in range(1, self.num_stations + 1):
+            data.append({
+                "device_id": f"{self.controller_mac_address}_sprinkle_total_amount_today_station_{station_id}",
+                "device_type": "SPRINKLE_TOTAL_AMOUNT_SENSOR",
+                "device_name": f"Sprinkle Total Amount Today {station_id}",
+                "device_uid": mac_to_uuid(self.controller_mac_address, sprinkle_counter),
+                "software_version": "1.0",
+                "state": round(self.sprinkle_total_amount_today[station_id - 1], 2),
+                "icon": "mdi:water",
+                "last_reboot": None,
+            })
+            sprinkle_counter += 1
+            
         data.append({
             "device_id": f"{self.controller_mac_address}_irrigation_stop",
             "device_type": "STOP_BUTTON",
@@ -767,12 +906,18 @@ class SolemCoordinator(DataUpdateCoordinator):
                 break
             await sleep(1)  # Validate every second
             self.total_water_consumption += (self.water_flow_rate[station - 1] / 60)
+            
+            # Calculate mm of water applied
+            flow_rate = self.water_flow_rate[station - 1]  # L/min
+            area = self.station_areas[station - 1] or 1  # m², avoid division by zero
+            mm_per_minute = flow_rate / area  # mm/min
+            self.sprinkle_total_amount_today[station - 1] += mm_per_minute / 60  # mm per second
 
         else:  # Só entra aqui se o loop terminar normalmente (sem interrupção)
             self.stations[station - 1].state = "Stopped"
             _LOGGER.info(f"{self.controller_mac_address} - Finished watering on station {station}.")
         
-        now = datetime.now()
+        now = dt_util.now()
         self.last_sprinkle = now
     
         data = await self.async_update_all_sensors()

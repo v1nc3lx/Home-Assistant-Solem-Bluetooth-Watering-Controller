@@ -1,6 +1,7 @@
 import random
 import uuid
 from datetime import datetime
+from homeassistant.util import dt as dt_util
 
 def mac_to_uuid(mac: str, last_part: int ) -> str:
     # Remover os dois pontos do MAC Address
@@ -23,3 +24,9 @@ def ensure_datetime(value):
         except ValueError:
             return datetime.min  # Se o formato for inválido, usa datetime.min
     return datetime.min  # Se for None ou outro tipo inesperado
+    
+def ensure_aware(dt_obj: datetime | None) -> datetime | None:
+    """Ensure datetime is timezone-aware."""
+    if dt_obj and dt_obj.tzinfo is None:
+        return dt_util.as_local(dt_obj)
+    return dt_obj
