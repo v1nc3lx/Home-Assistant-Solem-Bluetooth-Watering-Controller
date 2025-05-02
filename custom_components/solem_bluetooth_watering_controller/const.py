@@ -8,6 +8,9 @@ CONTROLLER_MAC_ADDRESS = "controller_mac_address"
 NUM_STATIONS = "num_stations"
 SPRINKLE_WITH_RAIN = "sprinkle_with_rain"
 OPEN_WEATHER_MAP_API_KEY = "open_weather_map_api_key"
+SOIL_MOISTURE_SENSOR = "soil_moisture_sensor"
+SOIL_MOISTURE_THRESHOLD = "soil_moisture_threshold"
+DEFAULT_SOIL_MOISTURE = 40
 MAX_SPRINKLES_PER_DAY = 5
 MONTHS = [
     "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"

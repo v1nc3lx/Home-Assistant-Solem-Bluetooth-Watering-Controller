@@ -61,6 +61,9 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.latitude = zone_state.attributes.get("latitude")
             self.longitude = zone_state.attributes.get("longitude")
 
+        self.soil_moisture_sensor = config_entry.data.get("soil_moisture_sensor")
+        self.soil_moisture_threshold = float(config_entry.data.get("soil_moisture_threshold", 0))
+
         # set variables from options.  You need a default here in case options have not been set
         self.poll_interval = config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -141,6 +144,9 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.latitude = zone_state.attributes.get("latitude")
             self.longitude = zone_state.attributes.get("longitude")
 
+        self.soil_moisture_sensor = config_entry.data.get("soil_moisture_sensor")
+        self.soil_moisture_threshold = float(config_entry.data.get("soil_moisture_threshold", 0))
+
         # set variables from options.  You need a default here in case options have not been set
         self.poll_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -206,6 +212,11 @@ class SolemCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(f"{self.controller_mac_address} - Initializing sprinkle_target_amount_today with default values.")
                 self.sprinkle_target_amount_today = [0.0] * self.num_stations
 
+            self.forecasted_sprinkle_today = storage_data.get("forecasted_sprinkle_today")
+            if not isinstance(self.forecasted_sprinkle_today, list) or len(self.forecasted_sprinkle_today) != self.num_stations:
+                _LOGGER.debug(f"{self.controller_mac_address} - Initializing forecasted_sprinkle_today with default values.")
+                self.forecasted_sprinkle_today = [0.0] * self.num_stations
+
             self.schedule = storage_data.get("schedule")
 
             self.water_flow_rate = storage_data.get("water_flow_rate")
@@ -267,6 +278,8 @@ class SolemCoordinator(DataUpdateCoordinator):
             self.water_flow_rate = [12] * self.num_stations
             self.sprinkle_total_amount_today = [0.0] * self.num_stations
             self.sprinkle_target_amount_today = [0.0] * self.num_stations
+            self.forecasted_sprinkle_today = [0.0] * self.num_stations
+            
             self.schedule = None
 
         _LOGGER.info(f"{self.controller_mac_address} - Persistent data loaded.")
@@ -299,6 +312,7 @@ class SolemCoordinator(DataUpdateCoordinator):
             "total_water_consumption": self.total_water_consumption,
             "sprinkle_total_amount_today": self.sprinkle_total_amount_today,
             "sprinkle_target_amount_today": self.sprinkle_target_amount_today,
+            "forecasted_sprinkle_today": self.forecasted_sprinkle_today,
             "schedule": self.schedule,
         }
     
@@ -393,7 +407,12 @@ class SolemCoordinator(DataUpdateCoordinator):
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
         self.rain_total_amount_forecasted_today = await self.weather_api.get_total_rain_forecast_for_today()
         self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
+        self.forecasted_sprinkle_today = [
+            max(0.0, target - self.rain_total_amount_forecasted_today)
+            for target in self.sprinkle_target_amount_today
+        ]
         self.last_reset = dt_util.now()
+        
         
         _LOGGER.info(f"{self.controller_mac_address} - Resetted rain and sprinkle indicators.")
 
@@ -528,8 +547,24 @@ class SolemCoordinator(DataUpdateCoordinator):
         return dt_util.as_local(fallback_time)
 
     async def run_watering_cycle(self, *_):
-        """Sprinkle if all conditions are valid."""
+        """Run the scheduled watering cycle if all conditions are met."""
         _LOGGER.info(f"{self.controller_mac_address} - Running scheduled watering cycle...")
+    
+        # Check soil moisture before proceeding
+        if self.soil_moisture_sensor:
+            state = self.hass.states.get(self.soil_moisture_sensor)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    moisture = float(state.state)
+                    if moisture >= self.soil_moisture_threshold:
+                        _LOGGER.info(f"{self.controller_mac_address} - Soil moisture is {moisture}%, above threshold ({self.soil_moisture_threshold}%). Skipping watering.")
+                        return
+                    else:
+                        _LOGGER.debug(f"{self.controller_mac_address} - Soil moisture is {moisture}%, below threshold ({self.soil_moisture_threshold}%). Proceeding with watering.")
+                except ValueError:
+                    _LOGGER.warning(f"{self.controller_mac_address} - Failed to parse soil moisture value: {state.state}")
+            else:
+                _LOGGER.warning(f"{self.controller_mac_address} - Soil moisture sensor state is unknown or unavailable: {state.state if state else 'None'}")
     
         current_month_index = dt_util.now().month - 1
         month_config = self.schedule[current_month_index]
@@ -559,13 +594,11 @@ class SolemCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(f"{self.controller_mac_address} - Station {station_id} already received enough water.")
                 continue
     
-            # Calcula o mm/min com base na área e caudal
             flow_rate = self.water_flow_rate[station_id - 1]  # L/min
-            area = self.station_areas[station_id - 1] or 1     # m², evita divisão por zero
+            area = self.station_areas[station_id - 1] or 1  # m²
             mm_per_minute = flow_rate / area
     
-            # Calcula os minutos necessários para atingir os mm restantes
-            minutes_needed = int((remaining_mm / mm_per_minute) + 0.999)  # arredonda para cima
+            minutes_needed = int((remaining_mm / mm_per_minute) + 0.999)
     
             if minutes_needed > 0:
                 _LOGGER.info(
@@ -573,6 +606,7 @@ class SolemCoordinator(DataUpdateCoordinator):
                     f"to apply {remaining_mm:.2f}mm (mm/min={mm_per_minute:.2f})"
                 )
                 await self.start_irrigation(station_id, minutes_needed)
+
 
     
     async def async_update_all_sensors(self):
@@ -598,6 +632,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         data = []
         
         counter = 1
+        forecast_sprinkle_counter = 501
         sprinkle_counter = 601
         water_flow_counter = 701
         stations_counter = 801
@@ -706,6 +741,20 @@ class SolemCoordinator(DataUpdateCoordinator):
                 "last_reboot": None,
             })
             sprinkle_counter += 1
+        
+        # Forecasted sprinkle today (mm) per station
+        for station_id in range(1, self.num_stations + 1):
+            data.append({
+                "device_id": f"{self.controller_mac_address}_forecasted_sprinkle_today_station_{station_id}",
+                "device_type": "FORECASTED_SPRINKLE_TODAY_SENSOR",
+                "device_name": f"Forecasted Sprinkle Today {station_id}",
+                "device_uid": mac_to_uuid(self.controller_mac_address, forecast_sprinkle_counter),
+                "software_version": "1.0",
+                "state": self.calculate_forecasted_sprinkle_today(station_id),
+                "icon": "mdi:weather-partly-rainy",
+                "last_reboot": None,
+            })
+            forecast_sprinkle_counter += 1
             
         data.append({
             "device_id": f"{self.controller_mac_address}_irrigation_stop",
@@ -881,6 +930,14 @@ class SolemCoordinator(DataUpdateCoordinator):
 
         return 0.0  # In case there are no recognizable keys
 
+    def calculate_forecasted_sprinkle_today(self, station_id: int) -> float:
+        """Calcula a quantidade de mm prevista de rega para hoje para uma estação específica."""
+        target_mm = self.sprinkle_target_amount_today[station_id - 1]
+        applied_mm = self.sprinkle_total_amount_today[station_id - 1]
+        forecasted_rain = self.rain_total_amount_forecasted_today
+    
+        remaining_mm = max(0.0, target_mm - (applied_mm + forecasted_rain))
+        return round(remaining_mm, 2)
 
     async def start_irrigation(self, station: int, minutes: int | None = None):
         duration = int(minutes if minutes is not None else self.irrigation_manual_duration)

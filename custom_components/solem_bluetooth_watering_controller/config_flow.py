@@ -39,6 +39,9 @@ from .const import (
     OPEN_WEATHER_MAP_API_KEY,
     SPRINKLE_WITH_RAIN,
     MAX_SPRINKLES_PER_DAY,
+    SOIL_MOISTURE_SENSOR,
+    SOIL_MOISTURE_THRESHOLD,
+    DEFAULT_SOIL_MOISTURE,
     MONTHS,
     BLUETOOTH_TIMEOUT,
     BLUETOOTH_MIN_TIMEOUT,
@@ -184,6 +187,10 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
                         }
                     }
                 ),
+                vol.Optional(SOIL_MOISTURE_SENSOR): selector(
+                    {"entity": {"domain": "sensor", "device_class": "humidity"}}
+                ),
+                vol.Optional(SOIL_MOISTURE_THRESHOLD, default=DEFAULT_SOIL_MOISTURE): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
             }
         )
 
@@ -313,6 +320,10 @@ class SolemConfigFlow(ConfigFlow, domain=DOMAIN):
                             }
                         }
                     ),
+                    vol.Optional(SOIL_MOISTURE_SENSOR, default=config_entry.data[SOIL_MOISTURE_SENSOR]): selector(
+                        {"entity": {"domain": "sensor", "device_class": "humidity"}}
+                    ),
+                    vol.Optional(SOIL_MOISTURE_THRESHOLD, default=config_entry.data.get(SOIL_MOISTURE_THRESHOLD, DEFAULT_SOIL_MOISTURE)): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
                 }
             ),
             errors=errors,

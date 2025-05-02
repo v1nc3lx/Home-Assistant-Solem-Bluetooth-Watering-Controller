@@ -60,6 +60,7 @@ async def async_setup_entry(
         SensorTypeClass("TOTAL_AMOUNT_RAIN_TODAY", "state", TotalAmountRainSensor),
         SensorTypeClass("TOTAL_FORECASTED_RAIN_TODAY", "state", TotalForecastedRainSensor),
         SensorTypeClass("SPRINKLE_TOTAL_AMOUNT_SENSOR", "state", SprinkleTotalAmountSensor),
+        SensorTypeClass("FORECASTED_SPRINKLE_TODAY_SENSOR", "state", ForecastedSprinkleTodaySensor),
     ]
 
     sensors = []
@@ -212,4 +213,16 @@ class SprinkleTotalAmountSensor(SolemBaseEntity, SensorEntity):
 
     @property
     def native_value(self) -> float:
+        return self.coordinator.get_device_parameter(self.device_id, self.parameter)
+
+class ForecastedSprinkleTodaySensor(SolemBaseEntity, SensorEntity):
+    """Sensor que mostra os mm totais previstos de rega para hoje por estação."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.PRECIPITATION
+    _attr_native_unit_of_measurement = UnitOfPrecipitationDepth.MILLIMETERS
+
+    @property
+    def native_value(self) -> float:
+        """Retorna o valor previsto de rega para hoje para esta estação (mm)."""
         return self.coordinator.get_device_parameter(self.device_id, self.parameter)
