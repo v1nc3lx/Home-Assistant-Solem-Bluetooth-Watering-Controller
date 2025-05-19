@@ -304,7 +304,9 @@ class OpenWeatherMapAPI:
         self.latitude = latitude
         self.longitude = longitude
         self.timeout = timeout
-        self._cache_forecast = None
+        # Initialise the forecast cache as an empty list to avoid iteration
+        # errors before any data is fetched from the API.
+        self._cache_forecast = []
         self._cache_current = None
         self._last_forecast_fetch_time = None
         self.last_forecast_date = datetime.now().date()

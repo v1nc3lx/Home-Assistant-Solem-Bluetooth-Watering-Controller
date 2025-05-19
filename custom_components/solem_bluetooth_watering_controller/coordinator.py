@@ -255,7 +255,6 @@ class SolemCoordinator(DataUpdateCoordinator):
                 self.last_sprinkle = last_sprinkle or dt_util.now()
 
             # Normalize all datetimes to be aware
-            from homeassistant.util import dt as dt_util
             from .util import ensure_aware
             self.last_reset = ensure_aware(self.last_reset)
             self.last_rain = ensure_aware(self.last_rain)
