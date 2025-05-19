@@ -53,7 +53,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"{self.controller_mac_address} - Starting Coordinator initialization...")
         
         self.sprinkle_with_rain = config_entry.data[SPRINKLE_WITH_RAIN] == "true"
-        self.openweathermap_api_key = config_entry.data[OPEN_WEATHER_MAP_API_KEY]
+        self.openweathermap_api_key = config_entry.data.get(OPEN_WEATHER_MAP_API_KEY)
         zone_entity_id = config_entry.data[CONF_SENSORS]
         zone_state = hass.states.get(zone_entity_id)
 
@@ -119,7 +119,15 @@ class SolemCoordinator(DataUpdateCoordinator):
         ]
         
         self.api = SolemAPI(mac_address=self.controller_mac_address, bluetooth_timeout=self.bluetooth_timeout)
-        self.weather_api = OpenWeatherMapAPI(self.openweathermap_api_key, self.latitude, self.longitude, self.openweathermap_api_timeout)
+        if self.openweathermap_api_key:
+            self.weather_api = OpenWeatherMapAPI(
+                self.openweathermap_api_key,
+                self.latitude,
+                self.longitude,
+                self.openweathermap_api_timeout,
+            )
+        else:
+            self.weather_api = None
         self.storage = Store(hass, 1, f"irrigation_{config_entry.unique_id}")
         self.irrigation_stop_event = asyncio.Event()
         
@@ -136,7 +144,7 @@ class SolemCoordinator(DataUpdateCoordinator):
     
         self.controller_mac_address = self.config_entry.data[CONTROLLER_MAC_ADDRESS].rsplit(' - ', 1)[1]
         self.sprinkle_with_rain = self.config_entry.data.get(SPRINKLE_WITH_RAIN, "False") == "true"
-        self.openweathermap_api_key = self.config_entry.data[OPEN_WEATHER_MAP_API_KEY]
+        self.openweathermap_api_key = self.config_entry.data.get(OPEN_WEATHER_MAP_API_KEY)
         zone_entity_id = self.config_entry.data[CONF_SENSORS]
         zone_state = self.hass.states.get(zone_entity_id)
         
@@ -160,7 +168,15 @@ class SolemCoordinator(DataUpdateCoordinator):
         self.solem_api_mock = config_entry.options.get(SOLEM_API_MOCK, "false") == "true"
 
         self.api = SolemAPI(mac_address=self.controller_mac_address, bluetooth_timeout=self.bluetooth_timeout)
-        self.weather_api = OpenWeatherMapAPI(self.openweathermap_api_key, self.latitude, self.longitude, self.openweathermap_api_timeout)
+        if self.openweathermap_api_key:
+            self.weather_api = OpenWeatherMapAPI(
+                self.openweathermap_api_key,
+                self.latitude,
+                self.longitude,
+                self.openweathermap_api_timeout,
+            )
+        else:
+            self.weather_api = None
 
         self.num_stations = config_entry.data.get("num_stations", 2)
         self.station_areas = config_entry.data.get("station_areas", [0] * self.num_stations)
@@ -191,11 +207,13 @@ class SolemCoordinator(DataUpdateCoordinator):
         if storage_data:
             self.will_it_rain_today = storage_data.get("will_it_rain_today")
             self.will_it_rain_today_forecast = storage_data.get("will_it_rain_today_forecast")
-            self.weather_api._cache_forecast = self.will_it_rain_today_forecast
+            if self.weather_api:
+                self.weather_api._cache_forecast = self.will_it_rain_today_forecast
             self.has_rained_today = storage_data.get("has_rained_today")
             self.is_raining_now = storage_data.get("is_raining_now")
             self.is_raining_now_json = storage_data.get("is_raining_now_json")
-            self.weather_api._cache_current = self.is_raining_now_json
+            if self.weather_api:
+                self.weather_api._cache_current = self.is_raining_now_json
             self.irrigation_manual_duration = storage_data.get("irrigation_manual_duration")
             self.rain_time_today = storage_data.get("rain_time_today", 0)
             self.rain_total_amount_today = storage_data.get("rain_total_amount_today", 0)
@@ -404,7 +422,10 @@ class SolemCoordinator(DataUpdateCoordinator):
         self.rain_time_today = 0
         self.rain_total_amount_today = 0
         self.sprinkle_total_amount_today = [0.0] * self.num_stations
-        self.rain_total_amount_forecasted_today = await self.weather_api.get_total_rain_forecast_for_today()
+        if self.weather_api:
+            self.rain_total_amount_forecasted_today = await self.weather_api.get_total_rain_forecast_for_today()
+        else:
+            self.rain_total_amount_forecasted_today = 0
         self.sprinkle_target_amount_today = await self.calculate_sprinkle_target_amounts()
         self.forecasted_sprinkle_today = [
             max(0.0, target - self.rain_total_amount_forecasted_today)
@@ -436,6 +457,10 @@ class SolemCoordinator(DataUpdateCoordinator):
     async def check_and_schedule_watering(self, *_):
         """Check if there should be watering today and schedule the tasks."""
         _LOGGER.info(f"{self.controller_mac_address} - Checking and scheduling watering times...")
+
+        if not self.schedule:
+            _LOGGER.warning(f"{self.controller_mac_address} - Schedule not initialized, skipping watering check.")
+            return
 
         today = dt_util.now().date()
         current_month_index = today.month - 1
@@ -487,6 +512,10 @@ class SolemCoordinator(DataUpdateCoordinator):
         Get next watering time considering configurations.
         """
         _LOGGER.debug(f"{self.controller_mac_address} - Determining next watering schedule...")
+
+        if not self.schedule:
+            _LOGGER.debug(f"{self.controller_mac_address} - Schedule not initialized yet.")
+            return None
         today = dt_util.now().date()
         current_month_index = today.month - 1
     
@@ -637,12 +666,18 @@ class SolemCoordinator(DataUpdateCoordinator):
         stations_counter = 801
         buttons_counter = 901
         
-        will_it_rain_result = await self.weather_api.will_it_rain()
-        self.will_it_rain_today = will_it_rain_result.get("will_rain", False)
-        self.will_it_rain_today_forecast = will_it_rain_result.get("forecast", [])
-        is_raining_result = await self.weather_api.is_raining()
-        self.is_raining_now = is_raining_result["is_raining"]
-        self.is_raining_now_json = is_raining_result["current"]
+        if self.weather_api:
+            will_it_rain_result = await self.weather_api.will_it_rain()
+            self.will_it_rain_today = will_it_rain_result.get("will_rain", False)
+            self.will_it_rain_today_forecast = will_it_rain_result.get("forecast", [])
+            is_raining_result = await self.weather_api.is_raining()
+            self.is_raining_now = is_raining_result["is_raining"]
+            self.is_raining_now_json = is_raining_result["current"]
+        else:
+            self.will_it_rain_today = False
+            self.will_it_rain_today_forecast = []
+            self.is_raining_now = False
+            self.is_raining_now_json = {}
         if self.is_raining_now:
             self.has_rained_today = True
             self.last_rain = dt_util.now()
@@ -655,7 +690,12 @@ class SolemCoordinator(DataUpdateCoordinator):
                         self.stop_irrigation()
                         break
         
-        self.rain_total_amount_forecasted_today = (await self.weather_api.get_total_rain_forecast_for_today()) + self.rain_total_amount_today
+        if self.weather_api:
+            self.rain_total_amount_forecasted_today = (
+                await self.weather_api.get_total_rain_forecast_for_today()
+            ) + self.rain_total_amount_today
+        else:
+            self.rain_total_amount_forecasted_today = self.rain_total_amount_today
 
         self.next_schedule = await self.get_next_watering_date()
 
