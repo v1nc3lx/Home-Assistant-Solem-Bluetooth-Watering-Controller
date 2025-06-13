@@ -496,7 +496,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         for hour in watering_hours:
             if hour:
                 try:
-                    watering_time = dt_util.as_local(datetime.combine(today, datetime.strptime(hour, "%H:%M:%S").time()))
+                    watering_time = dt_util.as_local(datetime.combine(today, datetime.strptime(hour, "%H:%M").time()))
                     delay = (watering_time - dt_util.now()).total_seconds()
                     if delay > 0:
                         async_call_later(self.hass, delay, self.run_watering_cycle)
@@ -553,7 +553,7 @@ class SolemCoordinator(DataUpdateCoordinator):
         # Determinar a próxima hora válida
         for hour in watering_hours:
             try:
-                next_watering_time = datetime.strptime(hour, "%H:%M:%S").time()
+                next_watering_time = datetime.strptime(hour, "%H:%M").time()
                 next_watering_datetime = datetime.combine(next_watering_day, next_watering_time)
                 next_watering_datetime = dt_util.as_local(next_watering_datetime)
     
@@ -570,7 +570,7 @@ class SolemCoordinator(DataUpdateCoordinator):
     
         fallback_time = datetime.combine(
             next_watering_day + timedelta(days=1),
-            datetime.strptime(watering_hours[0], "%H:%M:%S").time()
+            datetime.strptime(watering_hours[0], "%H:%M").time()
         )
         return dt_util.as_local(fallback_time)
 
