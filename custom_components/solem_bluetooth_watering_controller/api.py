@@ -144,7 +144,7 @@ class SolemAPI:
             raise APIConnectionError("Timeout connecting to api")
 
     async def list_characteristics(self):
-    if self.mock:
+        if self.mock:
         _LOGGER.debug("Mock=True, Returning from function...")
         return
 
