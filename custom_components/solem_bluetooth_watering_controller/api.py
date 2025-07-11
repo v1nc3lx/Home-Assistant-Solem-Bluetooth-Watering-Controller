@@ -145,8 +145,8 @@ class SolemAPI:
 
     async def list_characteristics(self):
         if self.mock:
-        _LOGGER.debug("Mock=True, Returning from function...")
-        return
+            _LOGGER.debug("Mock=True, Returning from function...")
+            return
 
     try:
         async with BleakClient(self.mac_address, timeout=self.bluetooth_timeout) as client:
