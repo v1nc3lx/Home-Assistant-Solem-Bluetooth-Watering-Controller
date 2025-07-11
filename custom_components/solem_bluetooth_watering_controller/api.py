@@ -143,30 +143,38 @@ class SolemAPI:
             _LOGGER.debug(f"Failed connecting!, ex:{ex}")
             raise APIConnectionError("Timeout connecting to api")
 
-
     async def list_characteristics(self):
-        if self.mock == True:
-            _LOGGER.debug("Mock=True, Returning from function...")
-            return
+    if self.mock:
+        _LOGGER.debug("Mock=True, Returning from function...")
+        return
 
-        try:
-            async with BleakClient(self.mac_address, timeout=self.bluetooth_timeout) as client:
-                if client.is_connected:
-                    _LOGGER.debug("Connected: True")
-                    _LOGGER.debug("Listing services")
-                    services = client.services
-                    for service in services:
-                        _LOGGER.info(f"Service: {service.uuid}")
-                        for char in service.characteristics:
-                            _LOGGER.info(f"  Characteristic: {char.uuid}")
-        
-                    _LOGGER.debug("Success")
-                else:
-                    _LOGGER.debug("Failed connecting!")
-                    raise APIConnectionError("Timeout connecting to api")
-        except Exception as ex:
-            _LOGGER.debug(f"Failed connecting!, ex:{ex}")
-            raise APIConnectionError("Timeout connecting to api")
+    try:
+        async with BleakClient(self.mac_address, timeout=self.bluetooth_timeout) as client:
+            if client.is_connected:
+                _LOGGER.debug("Connected: True")
+                _LOGGER.debug("Listing services")
+                services = client.services
+
+                for service in services:
+                    for char in getattr(service, 'characteristics', []):
+                        if char.uuid == CHARACTERISTIC_UUID and 'write' in char.properties:
+                            self.characteristic_uuid = char.uuid
+                            return
+                raise APIConnectionError("Device isn't suitable!")
+
+                # Debug info (if you want to keep it as reference)
+                # for service in services:
+                #     _LOGGER.info(f"Service: {service.uuid}")
+                #     for char in service.characteristics:
+                #         _LOGGER.info(f"  Characteristic: {char.uuid}")
+
+                _LOGGER.debug("Success")
+            else:
+                _LOGGER.debug("Failed connecting!")
+                raise APIConnectionError("Timeout connecting to api")
+    except Exception as ex:
+        _LOGGER.debug(f"Failed connecting!, ex:{ex}")
+        raise APIConnectionError("Timeout connecting to api") from ex
     
     async def turn_off_permanent(self):
         if self.mock == True:
